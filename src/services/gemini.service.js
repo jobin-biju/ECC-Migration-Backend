@@ -3,7 +3,7 @@ const sapOData = require('./sap_odata');
 require('dotenv').config();
 
 // Initialize Gemini - API Key directly injected as user requested, but should be in .env in production
-const apiKey = process.env.GEMINI_API_KEY || "AIzaSyCtL8PdCyIVc5hk3V7N5k5keGocS5Lf6XA";
+const apiKey = process.env.GEMINI_API_KEY || "";
 const genAI = new GoogleGenerativeAI(apiKey);
 
 class GeminiService {

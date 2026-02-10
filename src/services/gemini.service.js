@@ -1,5 +1,6 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const sapOData = require("./sap_odata");
+const sapRfc = require("./sap_rfc");
 require("dotenv").config();
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -73,9 +74,49 @@ User Query: "${prompt}"`;
             }
 
             // -------------------------------
-            // 3️⃣ DATA FETCH (STRICT)
+            // 3️⃣ DATA FETCH (ROUTING LOGIC)
             // -------------------------------
-            const data = await sapOData.fetchByIntent(intent);
+            let data = [];
+
+            // Check if OData is configured
+            const odataConfigured = process.env.SAP_SERVICE_URL && process.env.SAP_SERVICE_URL.startsWith('http');
+
+            if (intent.dataSource === "SAP_ODATA" && !odataConfigured) {
+                console.warn("⚠️ SAP OData not configured. Falling back to RFC.");
+                intent.dataSource = "SAP_RFC";
+            }
+
+            if (intent.dataSource === "SAP_RFC") {
+
+                // Smart routing: Check if SDK is present before trying
+                if (sapRfc.isSdkInstalled()) {
+                    console.log("Using RFC Data Source...");
+                    data = await sapRfc.fetchByIntent(intent);
+                } else {
+                    console.log("ℹ️ Standard SAP RFC SDK not found. Skipping direct RFC call.");
+                    console.log("👉 Switching to System Diagnostic Mode (HTTP Ping)...");
+
+                    const diag = await this.checkSystemHealth();
+                    if (diag) data = [diag];
+                }
+
+            } else {
+                // Default to OData (if configured) or if AI explicitly asked for it and we have config
+                console.log("Using OData Data Source...");
+                try {
+                    data = await sapOData.fetchByIntent(intent);
+                } catch (odataErr) {
+                    console.error("OData fetch failed, trying RFC fallback...", odataErr.message);
+
+                    if (sapRfc.isSdkInstalled()) {
+                        data = await sapRfc.fetchByIntent(intent);
+                    } else {
+                        console.log("RFC fallback skipped (No SDK). Checking System Diagnostic...");
+                        const diag = await this.checkSystemHealth();
+                        if (diag) data = [diag];
+                    }
+                }
+            }
 
             // -------------------------------
             // 4️⃣ FINAL RESPONSE
@@ -93,7 +134,7 @@ Rules:
 2. **FILTER THE DATA LIST** in your JSON response if the user asks for a specific condition.
    - If the user asks for "list users starting with B", ONLY return those users in the 'data' array.
    - If no specific filter asked, return all data.
-3. Be concise but helpful. Use phrases like "Here are the users..." or "I found the following records...".
+3. If the data shows "SystemID" and "Status": "ONLINE", this means connection is SUCCESSFUL. Confirm this to the user with enthusiasm (e.g., "✅ Yes, the system is connected!").
 
 Return STRICT JSON ONLY:
 {
@@ -114,6 +155,45 @@ Return STRICT JSON ONLY:
             return {
                 text: "Sorry, I couldn't process your request.",
                 data: null
+            };
+        }
+    }
+
+    async checkSystemHealth() {
+        const axios = require('axios');
+        const config = require('../config/sap_config');
+
+        try {
+            const host = config.sapRfc.ashost || 'localhost';
+            const sysnr = config.sapRfc.sysnr || '00';
+            const client = config.sapRfc.client || '800';
+            const port = 8000 + parseInt(sysnr, 10);
+            const pingUrl = `http://${host}:${port}/sap/public/ping?sap-client=${client}`;
+
+            const auth = {
+                username: config.sapRfc.user,
+                password: config.sapRfc.passwd
+            };
+
+            const startTime = Date.now();
+            const res = await axios.get(pingUrl, { auth, timeout: 5000 });
+            const duration = Date.now() - startTime;
+
+            return {
+                SystemID: "SAP ECC",
+                Status: "ONLINE ✅",
+                Host: host,
+                Port: port,
+                Client: client,
+                ResponseTime: `${duration}ms`,
+                Message: "Connection Established (HTTP)"
+            };
+        } catch (e) {
+            console.error("System Health Check Failed:", e.message);
+            return {
+                SystemID: "SAP ECC",
+                Status: "OFFLINE ❌",
+                Error: e.message
             };
         }
     }

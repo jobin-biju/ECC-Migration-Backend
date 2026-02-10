@@ -9,6 +9,7 @@ router.post('/sap/test', chatController.handleChat); // Alias for compatibility
 
 // Manual Test Route
 router.get('/test-sap', chatController.testConnection);
+router.get('/test-rfc', chatController.testRfcConnection);
 
 // Health check route
 router.get('/health', chatController.healthCheck);

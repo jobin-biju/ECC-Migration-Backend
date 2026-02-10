@@ -1,10 +1,8 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const sapOData = require('./sap_odata');
-require('dotenv').config();
+const sapOData = require("./sap_odata");
+require("dotenv").config();
 
-// Initialize Gemini - API Key directly injected as user requested, but should be in .env in production
-const apiKey = process.env.GEMINI_API_KEY || "AIzaSyCtL8PdCyIVc5hk3V7N5k5keGocS5Lf6XA";
-const genAI = new GoogleGenerativeAI(apiKey);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 class GeminiService {
     constructor() {
@@ -13,75 +11,109 @@ class GeminiService {
 
     async processQuery(prompt) {
         try {
-            console.log(`Processing with Gemini: "${prompt}"`);
+            // -------------------------------
+            // 1️⃣ INTENT + FIELD EXTRACTION
+            // -------------------------------
+            const intentPrompt = `
+Analyze the user query:
 
-            // 1. Get Context Data (Mock or Real)
-            const contextData = await sapOData.getAllData();
+"${prompt}"
 
-            // 2. Construct Prompt for Gemini
-            // We tell Gemini to act as a data query engine
-            const instruction = `
-            You are an intelligent data assistant for an SAP ECC Migration dashboard.
-            
-            Here is the current dataset (JSON format):
-            ${JSON.stringify(contextData)}
+Rules:
+- CHAT → general info, greetings, explanations
+- DATA → requires backend/API data (fetching tables)
 
-            User Query: "${prompt}"
+If DATA:
+- searchText: Extract specific FILTER VALUE (e.g. "John", "9001", "Sales Dept"). 
+  - DO NOT put column names like "phone", "email", "users" here.
+  - If user asks for "all phone numbers", searchText is null.
+- requestedFields: Extract specific columns requested (e.g. "name", "email", "phone"). 
+  - If user asks "get all phone numbers", requestedFields = ["phone"].
+  - If none specified, return [].
 
-            Your Task:
-            1. Analyze the user's query against the dataset.
-            2. Decide if the user wants to SEE the data rows or just wants an ANSWER.
-            
-            RULES FOR 'data' FIELD:
-            - IF the user asks for a count, sum, average, or single value (e.g. "How many users?", "Total stock?"): 
-              -> Set "text" to the answer.
-              -> Set "data" to [] (EMPTY ARRAY). Do NOT return the rows unless explicitly asked to "show" or "list" them.
-            
-            - IF the user asks to see/list/find records (e.g. "List active users", "Show details of Leanne", "Find order 9001"):
-              -> Set "text" to a brief intro (e.g. "Here are the active users:").
-              -> Set "data" to the array of matching records.
+Return STRICT JSON ONLY:
 
-            - IF the user asks a general question not about data (e.g. "Hello", "Help"):
-              -> Set "text" to a helpful response.
-              -> Set "data" to [].
+{
+  "intent": "CHAT" | "DATA",
+  "dataSource": "SAP_ODATA" | "NONE",
+  "searchText": "string | null",
+  "requestedFields": ["field1", "field2"]
+}
+`;
 
-            OUTPUT FORMAT (Strict JSON):
-            {
-                "text": "Your natural language response here.",
-                "data": [ ...array of relevant data objects or empty... ] 
-            }
-            
-            IMPORTANT: Return ONLY raw JSON. No markdown code blocks (like \`\`\`json).
-            `;
+            const intentResult = await this.model.generateContent(intentPrompt);
+            const cleaned = intentResult.response.text()
+                .replace(/```json|```/g, "")
+                .trim();
 
-            // 3. Generate Content
-            const result = await this.model.generateContent(instruction);
-            const response = await result.response;
-            const responseText = response.text();
-
-            console.log("Gemini Raw Response:", responseText);
-
-            // 4. Parse the JSON response from Gemini
+            let intent;
             try {
-                // Clean up potential markdown code blocks if Gemini adds them, just in case
-                const cleanedText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-                return JSON.parse(cleanedText);
-            } catch (parseError) {
-                console.error("Failed to parse Gemini response as JSON:", parseError);
-                // Fallback: If parsing fails, just return text
+                intent = JSON.parse(cleaned);
+            } catch {
+                intent = { intent: "CHAT", dataSource: "NONE", requestedFields: [] };
+            }
+            console.log("Parsed Intent:", intent);
+
+            // -------------------------------
+            // 2️⃣ CHAT MODE (NO DATA)
+            // -------------------------------
+            if (intent.intent === "CHAT" || intent.dataSource === "NONE") {
+                const chatPrompt = `
+You are an expert SAP ECC Migration Assistant.
+Your goal is to help users with their SAP data, migration tasks, and general inquiries.
+Maintain a professional, helpful, and corporate tone (like ChatGPT for Enterprise).
+
+User Query: "${prompt}"`;
+
+                const chat = await this.model.generateContent(chatPrompt);
                 return {
-                    text: responseText,
+                    text: chat.response.text(),
                     data: null
                 };
             }
 
-        } catch (error) {
-            console.error("Gemini Service Error:", error);
-            // Graceful fallback
+            // -------------------------------
+            // 3️⃣ DATA FETCH (STRICT)
+            // -------------------------------
+            const data = await sapOData.fetchByIntent(intent);
+
+            // -------------------------------
+            // 4️⃣ FINAL RESPONSE
+            // -------------------------------
+            const finalPrompt = `
+You are a Senior SAP Data Analyst for an ECC Migration project.
+
+User question: "${prompt}"
+
+Provided Data (Full Set):
+${JSON.stringify(data)}
+
+Rules:
+1. Answer the user's question professionally based on the data.
+2. **FILTER THE DATA LIST** in your JSON response if the user asks for a specific condition.
+   - If the user asks for "list users starting with B", ONLY return those users in the 'data' array.
+   - If no specific filter asked, return all data.
+3. Be concise but helpful. Use phrases like "Here are the users..." or "I found the following records...".
+
+Return STRICT JSON ONLY:
+{
+  "text": "Your professional answer here",
+  "data": [ ... the filtered list of objects ... ]
+}
+`;
+
+            const finalResult = await this.model.generateContent(finalPrompt);
+            const finalCleaned = finalResult.response.text()
+                .replace(/```json|```/g, "")
+                .trim();
+
+            return JSON.parse(finalCleaned);
+
+        } catch (err) {
+            console.error("Gemini Error:", err);
             return {
-                text: "I'm sorry, could not process your request with Gemini AI at this moment. Please check the backend configuration.",
-                data: null,
-                error: error.message
+                text: "Sorry, I couldn't process your request.",
+                data: null
             };
         }
     }

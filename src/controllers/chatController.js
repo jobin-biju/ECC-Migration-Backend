@@ -5,29 +5,14 @@ const geminiService = require('../services/gemini.service');
 // Basic controller to handle the chat/query request
 exports.handleChat = async (req, res) => {
     try {
-        const { prompt, query, connectionType } = req.body;
+        const { prompt, query } = req.body;
         const userPrompt = prompt || query;
 
         if (!userPrompt) {
-            return res.status(400).json({ error: 'Prompt/Query is required' });
+            return res.status(400).json({ error: "Prompt is required" });
         }
 
-        // console.log(`Received prompt: ${userPrompt}, Connection Type: ${connectionType || 'DEFAULT'}`);
-
-        let result;
-
-        // Simple logic to choose connector
-        // If the user specifically asks for RFC or OData, or we can default to one.
-        if (connectionType === 'RFC') {
-            // Example: Map prompt keywords to an RFC function module
-            // e.g., if prompt contains "order", call BAPI_SALESORDER_GETLIST
-            const functionName = "BAPI_MOCK_GETLIST";
-            result = await sapRfc.executeFunction(functionName, { PROMPT: userPrompt });
-        } else {
-            // Use Gemini AI for intelligent processing
-            // Gemini will fetch data from SAP OData service internally
-            result = await geminiService.processQuery(userPrompt);
-        }
+        const result = await geminiService.processQuery(userPrompt);
 
         res.json({
             success: true,
@@ -36,14 +21,10 @@ exports.handleChat = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Chat Controller Error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        console.error("Chat Controller Error:", error);
+        res.status(500).json({ success: false, error: error.message });
     }
 };
-
 exports.testConnection = async (req, res) => {
     try {
         console.log('Testing SAP Connection via API...');
